@@ -1,0 +1,10 @@
+[package]
+name = "box-proto"
+version = "0.1.0"
+edition = "2021"
+description = "箱の部品間で共有するプロトコル定義（範囲の表、メッセージ、fd の受け渡し）"
+
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

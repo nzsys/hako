@@ -1,0 +1,187 @@
+# 箱: jail.conf のテンプレート（パラメータとコメントのみ）
+#
+# 全10 jail の雛形。アドレスや epair の実名は構築時に決める。
+# そのままでは起動しない。
+#
+# 共通の方針:
+# * 「ネットワーク: 無し」の jail は ip4/ip6 = disable とし、ネットワーク
+#   スタックそのものを持たせない。allow.socket_af は既定（無効）のまま
+# * 全 jail で allow.raw_sockets = 0、allow.sysvipc = 0
+#   （db だけ sysvshm = new。PostgreSQL が必要とする）
+# * uid は全 jail を通して一意（rctl と LOCAL_PEERCRED が番号で数える）
+# * VNET の jail は epair の名前とアドレスを固定する。pf の antispoof は
+#   ルール読み込み時点のアドレスに展開されるため、アドレス付与の後に
+#   pf ルールを読み込むこと
+# * POSIX セマフォとメッセージキュー（sem.ko / mqueuefs.ko）は読み込まない
+
+# エッジ
+# 外部に接する唯一の入口。VNET を持ち、受信は 443 / 80 のみ（pf 側でも制限）。
+# 中の root プロセスは監視役の daemon(8) のみ。本体は待ち受けの後、
+# 入力を読む前に uid edge(2001) になる。
+edge {
+    path = "/var/jails/edge";
+    host.hostname = "edge.box.local";
+    vnet;
+    # epair の名前とアドレスは固定（例: ホスト側 epair0a / jail 側 epair0b）
+    vnet.interface = "epair0b";
+    exec.prestart = "ifconfig epair0 create";
+    exec.prestart += "ifconfig epair0a inet 192.0.2.1/30 up";
+    exec.prestart += "ifconfig epair0b inet 192.0.2.2/30 vnet $name";
+    exec.poststop = "ifconfig epair0a destroy";
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+    # mount.devfs は最小 ruleset で
+}
+
+# AP ゲートウェイ
+# ネットワーク無し。root プロセス無し。uid gw(2002) で動く。
+# ソケット: gwfd (振り分けから接続済み fd を受け取る) / gw (エッジへ)
+gw {
+    path = "/var/jails/gw";
+    host.hostname = "gw.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# 認証
+# ネットワーク無し。root プロセス無し。uid auth(2003) で動く。
+# ソケット: auth (エッジから) / relay (中継へ) / db
+auth {
+    path = "/var/jails/auth";
+    host.hostname = "auth.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# 振り分け + スロット
+# ネットワーク無し。中の root プロセスは振り分けのみ。
+# スロットの子 jail（ap.slot<K>）は振り分けが動的に作る（このファイルには
+# 書かない）。子 jail の path は /slots/<K> で、親と同じ / にしない
+# （POSIX 共有メモリの名前空間が jail ルートのパスで分かれるため）。
+ap {
+    path = "/var/jails/ap";
+    host.hostname = "ap.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.mount;
+    allow.mount.tmpfs;
+    # allow.mount.nullfs は与えない。/slots/<K> と app の nullfs は
+    # ホストが起動時にマウントする
+    enforce_statfs = 1;
+    # スロット数 + 余裕（dying の子 jail も枠を使う）
+    children.max = 20;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    # この jail には syslogd のソケットを渡さない
+}
+
+# データ中継
+# ネットワーク無し。root プロセス無し。uid relay(2004) で動く。
+# ソケット: relay (認証から) / db。ap 側に relay のソケットは無い
+relay {
+    path = "/var/jails/relay";
+    host.hostname = "relay.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# DB (PostgreSQL)
+# ネットワーク無し。postmaster は uid postgres(770) で動く。
+# S6 のソケットは PostgreSQL が作る:
+#   unix_socket_directories = '/run/sock/db'
+#   unix_socket_group       = 'c_db'
+#   unix_socket_permissions = '0770'
+db {
+    path = "/var/jails/db";
+    host.hostname = "db.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    # PostgreSQL だけ SYSV 共有メモリを許可（jail ごとの新しい名前空間）
+    sysvshm = new;
+    sysvmsg = disable;
+    sysvsem = disable;
+    exec.clean;
+    children.max = 0;
+}
+
+# 送信
+# ネットワーク無し。外向きの接続は egress の unix socket 経由のみ。
+# uid send(2005)。ソケット: db (テンプレート等の取得) / egress
+send {
+    path = "/var/jails/send";
+    host.hostname = "send.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# egress
+# 外へ出る TCP を張るのはこの jail だけ。VNET を持ち、送信は 443 / 465 と
+# 指定 DNS への 53 のみ（pf 側で制限し、内部帯域への送信は静的に拒否）。
+# uid egress(2006)。root プロセス無し。
+egress {
+    path = "/var/jails/egress";
+    host.hostname = "egress.box.local";
+    vnet;
+    vnet.interface = "epair1b";
+    exec.prestart = "ifconfig epair1 create";
+    exec.prestart += "ifconfig epair1a inet 192.0.2.5/30 up";
+    exec.prestart += "ifconfig epair1b inet 192.0.2.6/30 vnet $name";
+    exec.poststop = "ifconfig epair1a destroy";
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# ACME
+# ネットワーク無し。egress の unix socket 経由でのみ外へ出る。
+# uid acme(2007)。root プロセス無し。
+acme {
+    path = "/var/jails/acme";
+    host.hostname = "acme.box.local";
+    ip4 = disable;
+    ip6 = disable;
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}
+
+# 管理
+# VNET を持つが、受信は WireGuard のインターフェースからのみ（pf 側で制限）。
+# 管理用の別ドメインでだけ名前が引ける。uid admin(2008)。root プロセス無し。
+# ソケット: db
+admin {
+    path = "/var/jails/admin";
+    host.hostname = "admin.box.local";
+    vnet;
+    vnet.interface = "epair2b";
+    exec.prestart = "ifconfig epair2 create";
+    exec.prestart += "ifconfig epair2a inet 192.0.2.9/30 up";
+    exec.prestart += "ifconfig epair2b inet 192.0.2.10/30 vnet $name";
+    exec.poststop = "ifconfig epair2a destroy";
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+    children.max = 0;
+}

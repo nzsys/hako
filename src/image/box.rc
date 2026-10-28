@@ -1,0 +1,31 @@
+#!/bin/sh
+# 箱の自動起動。検証用 VM イメージにだけ入る rc.d スクリプト。
+# setup は冪等寄りなので毎回流す（マウント類は再起動で消えるため）。
+# 出力は /var/log/box.log に残す。
+#
+# PROVIDE: box
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="box"
+rcvar="box_enable"
+start_cmd="box_start"
+stop_cmd="box_stop"
+
+box_start()
+{
+    echo "box: stage0 を起動します（ログ: /var/log/box.log）"
+    /bin/sh /usr/local/box/src/install/stage0.sh setup >> /var/log/box.log 2>&1
+    /bin/sh /usr/local/box/src/install/stage0.sh start >> /var/log/box.log 2>&1
+}
+
+box_stop()
+{
+    /bin/sh /usr/local/box/src/install/stage0.sh stop >> /var/log/box.log 2>&1
+}
+
+load_rc_config $name
+: ${box_enable:="NO"}
+run_rc_command "$1"

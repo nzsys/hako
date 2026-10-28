@@ -1,0 +1,42 @@
+# 箱: jail.conf
+#
+#
+# 注意: jail(8) 自身は /etc/jail.conf.d/*.conf を読まない（実測。
+# 読むのは rc.d/jail 経由の場合のみ）。stage0.sh は
+# jail の呼び出しに -f でこのファイルを明示する。
+
+ap {
+    path = "/var/jails/ap";
+    host.hostname = "ap.box.local";
+    ip4 = disable;
+    ip6 = disable;
+
+    # 振り分けがスロットの子 jail を作り、世代ごとの tmpfs をマウントする
+    allow.mount;
+    allow.mount.tmpfs;
+    # allow.mount.nullfs は与えない。/slots/<K> と
+    # /slots/<K>/app の nullfs はホストが起動前にマウントする
+    enforce_statfs = 1;
+    # スロット数 4 + 世代交代と dying の子の分（dying も枠を使う）
+    children.max = 16;
+
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+
+    # mount.devfs は付けない。/dev は base の空ディレクトリのまま
+    persist;
+}
+
+relay {
+    path = "/var/jails/relay";
+    host.hostname = "relay.box.local";
+    ip4 = disable;
+    ip6 = disable;
+
+    allow.raw_sockets = 0;
+    allow.sysvipc = 0;
+    exec.clean;
+
+    persist;
+}

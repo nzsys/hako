@@ -1,0 +1,80 @@
+# 箱: ホストの pf 雛形
+#
+# 方針:
+# * 既定は全拒否。通すものだけを書く
+# * ルールはインターフェース単位で書き、jail のアドレスを固定して
+#   antispoof を掛ける
+# * テーブルはすべて const にする。const の無いテーブルは
+#   securelevel=3 でもアドレスを足し引きできる
+# * antispoof はルールを読み込んだ時点のアドレスに展開される。
+#   epair の名前とアドレスを固定し、アドレスを付けた後にこのファイルを
+#   読み込むこと。jail の作り直しでアドレスが変わる運用はしない
+#
+# アドレスとインターフェース名は構築時に決める。これは雛形であり、
+# 検証なしに実環境へ読み込まないこと。
+
+# マクロ（例）
+ext_if   = "igc0"        # 外部インターフェース
+edge_if  = "epair0a"     # ホスト側: edge jail (epair0b が jail 側)
+egress_if = "epair1a"    # ホスト側: egress jail (epair1b が jail 側)
+admin_if = "epair2a"     # ホスト側: admin jail (epair2b が jail 側)
+wg_if    = "wg0"         # WireGuard
+
+edge_addr   = "192.0.2.2"    # edge jail (jail.conf.template の epair0b)
+egress_addr = "192.0.2.6"    # egress jail (epair1b)
+admin_addr  = "192.0.2.10"   # admin jail (epair2b)
+
+dns_resolver = "192.0.2.53"  # 指定の DNS リゾルバ（構築時に実アドレスへ）
+
+# テーブル（すべて const）
+table <edge_vnet>   const { $edge_addr }
+table <egress_vnet> const { $egress_addr }
+table <admin_vnet>  const { $admin_addr }
+table <dns_srv>     const { $dns_resolver }
+
+# 内部のアドレス帯: egress からの送信を静的に拒否するために使う
+table <internal_nets> const { \
+    127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, \
+    169.254.0.0/16, 192.0.2.0/24, \
+    ::1/128, fe80::/10, fc00::/7, ::ffff:0.0.0.0/96 }
+
+set block-policy drop
+set skip on lo0
+
+# 既定拒否
+block all
+
+# antispoof: アドレス固定が前提。epair と WireGuard に掛ける
+antispoof for { $edge_if, $egress_if, $admin_if, $wg_if }
+
+# edge: 外部から 443 / 80 の受信のみ
+pass in  on $ext_if proto tcp from any to <edge_vnet> port { 443, 80 }
+pass out on $edge_if proto tcp from any to <edge_vnet> port { 443, 80 }
+# edge からの発信は作らない（応答は state で戻る）。新規の外向き接続は
+# ルールを足さない限り block all で落ちる
+
+# egress: 外部への 443 / 465 と DNS のみ
+# 内部帯域への送信は静的に拒否する。pf は (quick が無い限り) 最後に一致
+# したルールが勝つので、拒否側に quick を付けて後段の pass より優先させる
+block out quick on $ext_if from <egress_vnet> to <internal_nets>
+block out quick on $egress_if from <egress_vnet> to <internal_nets>
+pass out on $ext_if proto { tcp, udp } from <egress_vnet> to <dns_srv> port 53
+pass out on $ext_if proto tcp from <egress_vnet> to any port { 443, 465 }
+# jail 側 epair の通過（ホスト側インターフェース上）
+pass out on $egress_if proto { tcp, udp } from <egress_vnet> to <dns_srv> port 53
+pass out on $egress_if proto tcp from <egress_vnet> to any port { 443, 465 }
+pass in  on $egress_if proto { tcp, udp } from <egress_vnet> to <dns_srv> port 53
+pass in  on $egress_if proto tcp from <egress_vnet> to any port { 443, 465 }
+
+# admin: WireGuard のインターフェースからの受信のみ
+pass in  on $wg_if proto tcp from any to <admin_vnet> port 443
+pass out on $admin_if proto tcp from any to <admin_vnet> port 443
+pass in  on $admin_if proto tcp from any to <admin_vnet> port 443
+
+# ホスト自身
+# WireGuard、NTP、ログの転送先、更新のみ。それ以外は block all で落ちる
+pass in  on $ext_if proto udp from any to (self) port 51820   # WireGuard
+pass out on $ext_if proto udp from (self) to any port 123     # NTP
+# ログ転送と更新の宛先は構築時に固定して書く（例）
+# pass out on $ext_if proto tcp from (self) to <log_host> port 6514
+# pass out on $ext_if proto tcp from (self) to <pkg_mirror> port 443

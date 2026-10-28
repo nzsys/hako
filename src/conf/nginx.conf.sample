@@ -1,0 +1,29 @@
+# 箱: nginx サンプル
+#
+# adapter が 127.0.0.1:8080 で直接 HTTP を受けるので nginx は必須では
+# ない。手元で挟みたいときの雛形。
+#
+# ヘッダーはそのまま通す。adapter が Sec-Fetch-* や Cookie を見るので、
+# ここで書き換えたり落としたりしないこと。
+
+server {
+    # 動作確認用の入口
+    listen 127.0.0.1:8081;
+
+    # アプリの上限に合わせた小さめの値
+    client_max_body_size 64k;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+
+        # クライアントのヘッダーをそのまま渡す
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Connection "";
+        # X-Forwarded-* 等は付けない（送信元の概念が無いため）
+        proxy_pass_request_headers on;
+
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+    }
+}
